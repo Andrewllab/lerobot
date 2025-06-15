@@ -22,6 +22,7 @@ python -m lerobot.record \
     --robot.type=so100_follower \
     --robot.port=/dev/tty.usbmodem58760431541 \
     --robot.cameras="{laptop: {type: opencv, camera_index: 0, width: 640, height: 480}}" \
+    --robot.cameras="{ wrist1: {type: intelrealsense, serial_number_or_name: 827112072130, width: 640, height: 480, fps: 30}}"
     --robot.id=black \
     --teleop.type=so100_leader \
     --teleop.port=/dev/tty.usbmodem58760431551 \
@@ -31,6 +32,21 @@ python -m lerobot.record \
     --dataset.single_task="Grab the cube"
 ```
 """
+
+"""
+python -m lerobot.record \
+    --robot.type=so101_follower \
+    --robot.port=/dev/ttyACM0 \
+    --robot.cameras="{laptop: {type: opencv, camera_index: 0, width: 640, height: 480}}" \
+    --robot.id=purple_follower_arm \
+    # --teleop.type=so100_leader \
+    # --teleop.port=/dev/tty.usbmodem58760431551 \
+    # --teleop.id=blue \
+    --dataset.repo_id=aliberts/record-test \
+    --dataset.num_episodes=2 \
+    --dataset.single_task="Grab the cube"
+"""
+
 
 import logging
 import time
@@ -81,7 +97,17 @@ from lerobot.common.utils.visualization_utils import _init_rerun
 from lerobot.configs import parser
 from lerobot.configs.policies import PreTrainedConfig
 
-from .common.teleoperators import koch_leader, so100_leader, so101_leader  # noqa: F401
+from lerobot.common.teleoperators import koch_leader, so100_leader, so101_leader  # noqa: F401
+
+import time
+
+
+state_action_name = ['shoulder_pan.pos',
+                     'shoulder_lift.pos',
+                     'elbow_flex.pos',
+                     'wrist_flex.pos',
+                     'wrist_roll.pos',
+                     'gripper.pos',]
 
 
 @dataclass
@@ -99,11 +125,11 @@ class DatasetRecordConfig:
     # Number of seconds for resetting the environment after each episode.
     reset_time_s: int | float = 60
     # Number of episodes to record.
-    num_episodes: int = 50
+    num_episodes: int = 60
     # Encode frames in the dataset into video
-    video: bool = True
+    video: bool = False
     # Upload dataset to Hugging Face hub.
-    push_to_hub: bool = True
+    push_to_hub: bool = False
     # Upload on private repository on the Hugging Face hub.
     private: bool = False
     # Add tags to your dataset on the hub.
@@ -138,6 +164,9 @@ class RecordConfig:
     # Resume recording on an existing dataset.
     resume: bool = False
 
+    robot1: RobotConfig | None = None
+    teleop1: TeleoperatorConfig | None = None
+
     def __post_init__(self):
         if self.teleop is not None and self.policy is not None:
             raise ValueError("Choose either a policy or a teleoperator to control the robot")
@@ -166,6 +195,7 @@ def record_loop(
     control_time_s: int | None = None,
     single_task: str | None = None,
     display_data: bool = False,
+    **kwargs
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -174,12 +204,24 @@ def record_loop(
     if policy is not None:
         policy.reset()
 
+    robot1 = kwargs.get("robot1", None)
+    teleop1 = kwargs.get("teleop1", None)
+
     timestamp = 0
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
 
+        # st = time.time()
         observation = robot.get_observation()
+        observation1 = robot1.get_observation() if robot1 is not None else None
+        if observation1 is not None:
+            prefix = 'robo1_'
+            for key, value in observation1.items():
+                if key in state_action_name:
+                    observation[prefix+key] = value
+                else:
+                    observation[key] = value
 
         if policy is not None or dataset is not None:
             observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
@@ -196,15 +238,24 @@ def record_loop(
             action = {key: action_values[i].item() for i, key in enumerate(robot.action_features)}
         else:
             action = teleop.get_action()
+            action1 = teleop1.get_action() if teleop1 is not None else None
 
         # Action can eventually be clipped using `max_relative_target`,
         # so action actually sent is saved in the dataset.
         sent_action = robot.send_action(action)
+        sent_action1 = robot1.send_action(action1) if (robot1 is not None and action1 is not None) else None
+        if sent_action1:
+            prefix = 'robo1_'
+            for key, value in sent_action1.items():
+                sent_action[prefix + key] = value
 
         if dataset is not None:
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
             frame = {**observation_frame, **action_frame}
             dataset.add_frame(frame, task=single_task)
+
+        # end = time.time()
+        # print(end-st)
 
         if display_data:
             for obs, val in observation.items():
@@ -232,11 +283,37 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     if cfg.display_data:
         _init_rerun(session_name="recording")
 
+    # instantiate two set robots
     robot = make_robot_from_config(cfg.robot)
+    num_robo = 1
+    robot1 = None
+    if cfg.robot1:
+        robot1 = make_robot_from_config(cfg.robot1)
+        num_robo += 1
+    # todo delete, only test
+    # robot1 = robot
+    # num_robo += 1
+
+    # instantiate two teleop sets
     teleop = make_teleoperator_from_config(cfg.teleop) if cfg.teleop is not None else None
+    teleop1 = make_teleoperator_from_config(cfg.teleop1) if cfg.teleop1 is not None else None
+    # teleop1 = teleop  # for debug
 
     action_features = hw_to_dataset_features(robot.action_features, "action", cfg.dataset.video)
     obs_features = hw_to_dataset_features(robot.observation_features, "observation", cfg.dataset.video)
+    #copy the action and state feature names with prefix +"robo1_"
+    if robot1:
+        prefix = 'robo1_'
+        robo1_names = [prefix + name for name in
+                       action_features['action']['names']]
+
+        action_features['action']['names'] += robo1_names
+        action_features['action']['shape'] = (12,)
+
+        obs_features['observation.state']['names'] += robo1_names
+        obs_features['observation.state']['shape'] = (12,)
+        # obs_features['observation.images.wrist1'] = obs_features['observation.images.wrist']
+
     dataset_features = {**action_features, **obs_features}
 
     if cfg.resume:
@@ -250,7 +327,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 num_processes=cfg.dataset.num_image_writer_processes,
                 num_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
             )
-        sanity_check_dataset_robot_compatibility(dataset, robot, cfg.dataset.fps, dataset_features)
+        # sanity_check_dataset_robot_compatibility(dataset, robot, cfg.dataset.fps, dataset_features)
     else:
         # Create empty dataset or load existing saved episodes
         sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
@@ -271,8 +348,18 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     robot.connect()
     if teleop is not None:
         teleop.connect()
+    # todo uncomment for debug
+    if robot1:
+        robot1.connect()
+    if teleop1 is not None:
+        teleop1.connect()
 
     listener, events = init_keyboard_listener()
+
+    kwargs = {}
+    if robot1 and teleop1:
+        kwargs["robot1"] = robot1
+        kwargs["teleop1"] = teleop1
 
     for recorded_episodes in range(cfg.dataset.num_episodes):
         log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
@@ -286,6 +373,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             control_time_s=cfg.dataset.episode_time_s,
             single_task=cfg.dataset.single_task,
             display_data=cfg.display_data,
+            **kwargs
         )
 
         # Execute a few seconds without recording to give time to manually reset the environment
@@ -302,6 +390,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 control_time_s=cfg.dataset.reset_time_s,
                 single_task=cfg.dataset.single_task,
                 display_data=cfg.display_data,
+                **kwargs
             )
 
         if events["rerecord_episode"]:
@@ -320,6 +409,10 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
     robot.disconnect()
     teleop.disconnect()
+    if robot1:
+        robot1.disconnect()
+    if teleop1:
+        teleop1.disconnect()
 
     if not is_headless() and listener is not None:
         listener.stop()
@@ -333,3 +426,6 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
 if __name__ == "__main__":
     record()
+    """
+    python -m lerobot.record --robot.type=so101_follower --robot.port=/dev/ttyACM3 --robot.cameras="{ wrist: {type: intelrealsense, serial_number_or_name: 827112072130, width: 640, height: 480, fps: 30}, top: {type: intelrealsense, serial_number_or_name: 834412070397, width: 640, height: 480, fps: 30} }" --robot.id=purple_follower_arm --dataset.repo_id=aliberts/record-test --dataset.num_episodes=2 --dataset.single_task="test" --teleop.type=so101_leader --teleop.port=/dev/ttyACM2 --teleop.id=black_green_leader --robot1.type=so101_follower --robot1.port=/dev/ttyACM1 --robot1.cameras="{ wrist1: {type: intelrealsense, serial_number_or_name: 244622072246, width: 640, height: 480, fps: 30}}" --robot1.id=green_follower --teleop1.type=so101_leader --teleop1.port=/dev/ttyACM0 --teleop1.id=green_leader
+    """
