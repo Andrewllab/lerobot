@@ -215,15 +215,18 @@ def record_loop(
         # st = time.time()
         observation = robot.get_observation()
         observation1 = robot1.get_observation() if robot1 is not None else None
+        print(robot1)
         if observation1 is not None:
             prefix = 'robo1_'
             for key, value in observation1.items():
+                print(key)
                 if key in state_action_name:
                     observation[prefix+key] = value
                 else:
                     observation[key] = value
 
         if policy is not None or dataset is not None:
+            print("debug", dataset.features.keys(), observation.keys())
             observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
 
         if policy is not None:
@@ -235,7 +238,9 @@ def record_loop(
                 task=single_task,
                 robot_type=robot.robot_type,
             )
+            # action = {key: action_values[i].item() for i, key in enumerate(robot.action_features)}
             action = {key: action_values[i].item() for i, key in enumerate(robot.action_features)}
+            action1 = {key: action_values[i].item() for i, key in enumerate(robot1.action_features)} if robot1 is not None else None
         else:
             action = teleop.get_action()
             action1 = teleop1.get_action() if teleop1 is not None else None
@@ -339,7 +344,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             features=dataset_features,
             use_videos=cfg.dataset.video,
             image_writer_processes=cfg.dataset.num_image_writer_processes,
-            image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),
+            image_writer_threads=cfg.dataset.num_image_writer_threads_per_camera * len(robot.cameras),  #todo not correct
         )
 
     # Load pretrained policy
@@ -357,12 +362,13 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     listener, events = init_keyboard_listener()
 
     kwargs = {}
-    if robot1 and teleop1:
+    if robot1:
         kwargs["robot1"] = robot1
         kwargs["teleop1"] = teleop1
 
     for recorded_episodes in range(cfg.dataset.num_episodes):
         log_say(f"Recording episode {dataset.num_episodes}", cfg.play_sounds)
+        print("record", kwargs["robot1"])
         record_loop(
             robot=robot,
             events=events,
@@ -426,6 +432,4 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
 
 if __name__ == "__main__":
     record()
-    """
-    python -m lerobot.record --robot.type=so101_follower --robot.port=/dev/ttyACM3 --robot.cameras="{ wrist: {type: intelrealsense, serial_number_or_name: 827112072130, width: 640, height: 480, fps: 30}, top: {type: intelrealsense, serial_number_or_name: 834412070397, width: 640, height: 480, fps: 30} }" --robot.id=purple_follower_arm --dataset.repo_id=aliberts/record-test --dataset.num_episodes=2 --dataset.single_task="test" --teleop.type=so101_leader --teleop.port=/dev/ttyACM2 --teleop.id=black_green_leader --robot1.type=so101_follower --robot1.port=/dev/ttyACM1 --robot1.cameras="{ wrist1: {type: intelrealsense, serial_number_or_name: 244622072246, width: 640, height: 480, fps: 30}}" --robot1.id=green_follower --teleop1.type=so101_leader --teleop1.port=/dev/ttyACM0 --teleop1.id=green_leader
-    """
+
