@@ -101,6 +101,9 @@ from lerobot.common.teleoperators import koch_leader, so100_leader, so101_leader
 
 import time
 
+import hydra
+from omegaconf import OmegaConf, DictConfig
+
 
 state_action_name = ['shoulder_pan.pos',
                      'shoulder_lift.pos',
@@ -430,6 +433,12 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     return dataset
 
 
+@hydra.main(version_base=None, config_path="hy_cfgs", config_name="record")
+def main(cfg: DictConfig) -> None:
+    record_config = hydra.utils.instantiate(cfg.record)
+    record(record_config)
+
+
 if __name__ == "__main__":
-    record()
+    main()
 

@@ -1,0 +1,42 @@
+_target_: record.RecordConfig
+_recursive_: false
+
+robot:
+  _target_: common.robots.config.RobotConfig
+  _recursive_: false
+  type: so101_follower
+  port: /dev/ttyACM0
+  id: None
+  calibration_dir: None
+  cameras: {}
+
+teleop:
+  _target_: common.teleoperators.config.TeleoperatorConfig
+  _recursive_: false
+  type: so101_leader
+  port: /dev/tty.usbmodem58760431551
+  id: None
+  calibration_dir: None
+
+dataset:
+  _target_: record.DatasetRecordConfig
+  _recursive_: false
+  repo_id: Tschian/lerobot
+  single_task: stack the cups
+  root: ~/.cache/huggingface/lerobot
+  fps: int = 30
+  episode_time_s: 60
+  reset_time_s: 20
+  num_episodes: 100
+  video: False
+  push_to_hub: False
+  private: False
+  tags: None
+  num_image_writer_processes: 0
+  num_image_writer_threads_per_camera: 4
+
+policy: None
+display_data: False
+play_sounds: True
+resume: False
+
